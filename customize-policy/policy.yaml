@@ -1,0 +1,29 @@
+#
+# To use this policy with the ec command line:
+#   ec validate image \
+#     --image $IMAGE \
+#     --public-key key.pub \
+#     --policy github.com/enterprise-contract/config//slsa3
+#
+# To use with an Konflux Enterprise Contract Integration Test CR:
+#   ...
+#   spec:
+#     params:
+#     - name: POLICY_CONFIGURATION
+#       value: github.com/enterprise-contract/config//slsa3
+#     ...
+#
+name: Custom Policy
+description: >-
+  Contains rule related to gating each build to use 1-117.1684741281 version of Python image in Dockerfile
+  Source: https://github.com/the-mentalist-quiz/ec-policy/policy.yaml
+
+sources:
+  - name: Custom Policy
+    policy:
+      - oci::quay.io/enterprise-contract/ec-release-policy:latest
+      - github.com/cuipinghuo/python-sample.git//customize-policy/rules
+configuration:
+  include:
+    - verify_base_python_version
+    - cve
