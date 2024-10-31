@@ -1,1 +1,2 @@
-This is a python sample project built by Konflux-ci.
+This is a python sample project leveraging Konflux-ci for building images and release.
+
