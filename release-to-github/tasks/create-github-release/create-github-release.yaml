@@ -1,0 +1,105 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: create-github-release
+  labels:
+    app.kubernetes.io/version: "2.1.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/tags: release
+spec:
+  description: >-
+    Tekton task that creates a release on github.com via the GitHub API
+  params:
+    - name: repository
+      type: string
+      description: "The github repository's name where the release should be created"
+    - name: username
+      type: string
+      description: "The github username of the repo where the release should be created"
+    - name: release_version
+      type: string
+      description: "The version string of the new release"
+    - name: commit_sha
+      type: string
+      description: "The commit SHA that triggered build in Konflux"
+    - name: release_author
+      type: string
+      description: "The username of the release creator/requester"
+  workspaces:
+    - name: data
+      description: The workspace where the binaries to release reside
+  results:
+    - name: release_url
+      type: string
+      description: Release URL to inspect the created release
+  steps:
+    - name: create-github-release
+      image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+      script: |
+        #!/usr/bin/env sh
+
+        # Disable verbose mode before handling sensitive information (GitHub token)
+        set +x
+
+        # Check if the GH_TOKEN is set
+        if [ -z "$GH_TOKEN" ]; then
+          echo "GH_TOKEN is not set!"
+          exit 1
+        fi
+
+        # get latest release of konflux-test
+        latestRelease=$(curl -s https://api.github.com/repos/"$(params.username)"/"$(params.repository)"/releases/latest | jq '.name')
+
+        # Extract numbers from the version string using parameter expansion
+        newLatestRelease=${latestRelease//[!0-9]/}
+
+        # Increment the release version
+        ((newLatestRelease++))
+
+        # Format the new version correctly (e.g., 105 -> 1.0.6)
+        major=${newLatestRelease:0:1}
+        minor=${newLatestRelease:1:1}
+        patch=${newLatestRelease:2}
+
+        newLatestReleaseFormatted="v${major}.${minor}.${patch}"
+
+        RELEASE_RESPONSE=$(curl -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          https://api.github.com/repos/"$(params.username)"/"$(params.repository)"/releases \
+          -d @- <<EOF
+          {
+            "tag_name": "$newLatestReleaseFormatted",
+            "target_commitish": "$(params.commit_sha)",
+            "name": "$newLatestReleaseFormatted",
+            "body": ":tada: This release is automatically created by the Konflux :tada:\n\n Release author: \`$(params.release_author)\`",
+            "draft": false,
+            "prerelease": false
+          }
+        EOF
+        )
+
+        # Re-enable verbose mode for subsequent commands
+        set -ex
+
+        # Check for curl success
+        if [ $? -ne 0 ]; then
+          echo "Failed to create release"
+          exit 1
+        fi
+
+        RELEASE_URL=$(echo "$RELEASE_RESPONSE" | jq -r .html_url)
+
+        echo "Created release URL: $RELEASE_URL"
+
+        # Write the release URL to the task result
+        echo "$RELEASE_URL" > $(results.release_url.path)
+
+      env:
+        - name: GH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: my-github-secret
+              key: token
