@@ -21,9 +21,7 @@ description: >-
 sources:
   - name: Custom Policy
     policy:
-      - oci::quay.io/enterprise-contract/ec-release-policy:latest
       - github.com/cuipinghuo/python-sample.git//customize-policy/rules
 configuration:
   include:
     - verify_base_python_version
-    - cve
