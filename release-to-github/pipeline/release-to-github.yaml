@@ -1,0 +1,170 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-to-github
+  annotations:
+    tekton.dev/tags: release
+spec:
+  description: >-
+    Tekton release pipeline to release the source code extracted
+    from the image built with Konflux, to GitHub.
+  params:
+    - name: verify_ec_task_bundle
+      type: string
+      description: The location of the bundle containing the verify-enterprise-contract task
+      default: "quay.io/enterprise-contract/ec-task-bundle:4b1df9d909379748b1945f10a7f5f802e4b06108"
+    - name: enterpriseContractPolicy
+      type: string
+      description: EnterpriseContractPolicy that needs to be executed
+      default: enterprise-contract-service/default
+    - name: enterpriseContractExtraRuleData
+      type: string
+      description: |
+        Extra rule data to be merged into the policy specified in params.enterpriseContractPolicy. Use syntax
+        "key1=value1,key2=value2..."
+      default: "pipeline_intention=release"
+    - name: enterpriseContractTimeout
+      type: string
+      description: Timeout setting for `ec validate`
+      default: 40m0s
+    - name: release
+      type: string
+      description:
+        The namespaced name (namespace/name) of the Release
+    - name: releasePlan
+      type: string
+      description: The namespaced name (namespace/name) of the ReleasePlan
+    - name: snapshot
+      type: string
+      description: The namespaced name (namespace/name) of the Snapshot
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks to be used are stored
+      default: https://github.com/dheerajodha/the-mentalist-quiz.git
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
+      default: create-gh-release-pipeline
+  workspaces:
+    - name: release-workspace
+  tasks:
+    - name: collect-snapshot-spec
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: release-to-github/tasks/collect-snapshot-spec/collect-snapshot-spec.yaml
+      params:
+        - name: snapshot
+          value: $(params.snapshot)
+        - name: subdirectory
+          value: $(context.pipelineRun.uid)
+      workspaces:
+        - name: data
+          workspace: release-workspace
+    - name: verify-enterprise-contract
+      taskRef:
+        resolver: "bundles"
+        params:
+          - name: bundle
+            value: $(params.verify_ec_task_bundle)
+          - name: kind
+            value: task
+          - name: name
+            value: verify-enterprise-contract
+      params:
+        - name: IMAGES
+          value: "$(workspaces.data.path)/$(tasks.collect-snapshot-spec.results.snapshotSpec)"
+        - name: SSL_CERT_DIR
+          value: /var/run/secrets/kubernetes.io/serviceaccount
+        - name: POLICY_CONFIGURATION
+          value: $(params.enterpriseContractPolicy)
+        - name: STRICT
+          value: "1"
+        - name: IGNORE_REKOR
+          value: "true"
+        - name: EXTRA_RULE_DATA
+          value: $(params.enterpriseContractExtraRuleData)
+        - name: TIMEOUT
+          value: $(params.enterpriseContractTimeout)
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - collect-snapshot-spec
+    - name: extract-requester-from-release
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: release-to-github/tasks/extract-requester-from-release/extract-requester-from-release.yaml
+      params:
+        - name: image
+          value: "quay.io/hacbs-release/cloud-builders-kubectl\
+            @sha256:8ab94be8b2b4f3d117f02d868b39540fddd225447abf4014f7ba4765cb39f753"
+        - name: script
+          value: |
+            set -x
+
+            NAMESPACE=$(echo $(params.release) | cut -d '/' -f 1)
+            NAME=$(echo $(params.release) | cut -d '/' -f 2)
+
+            AUTHOR=$(kubectl get release ${NAME} -n ${NAMESPACE} \
+            -o=jsonpath='{.status.attribution.author}' | tee $(results.author.path))
+
+            if [[ ${AUTHOR} == "" ]] ; then exit 1 ; fi
+      runAfter:
+        - verify-enterprise-contract
+    - name: collect-github-params
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: release-to-github/tasks/collect-github-params/collect-github-params.yaml
+      params:
+        - name: snapshotPath
+          value: $(tasks.collect-snapshot-spec.results.snapshotSpec)
+      runAfter:
+        - extract-requester-from-release
+    - name: create-github-release
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: release-to-github/tasks/create-github-release/create-github-release.yaml
+      params:
+        - name: repository
+          value: $(tasks.collect-github-params.results.repository)
+        - name: username
+          value: $(tasks.collect-github-params.results.username)
+        - name: release_version
+          value: $(tasks.collect-github-params.results.release_version)
+        - name: commit_sha
+          value: $(tasks.collect-github-params.results.commit_sha)
+        - name: release_author
+          value: $(tasks.extract-requester-from-release.results.author)
+      runAfter:
+        - collect-github-params
